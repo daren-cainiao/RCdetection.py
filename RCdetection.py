@@ -23,6 +23,7 @@ import subprocess
 from osgeo import gdal, osr, gdal_array
 import sys
 import scipy
+from shutil import copyfile
 
 filepath2ini = ''
 
@@ -95,7 +96,7 @@ def geoCodeTiff(in_filename, out_filename, coord):
     spei_ds.FlushCache()  # 将数据写入硬盘
     spei_ds = None  # 关闭spei_ds指针
 
-def nearest(data_type, in_filename_lon, out_filename_lon, nline_in, width_in):
+def nearest(data_type, in_filename_lon, out_filename_lon, nline_in, width_in,gf3Mode = ""):
     # 0：读取数据
     if data_type == 'Sentinel':
         line_scale_factor = 2 # 高度过采样因子
@@ -107,8 +108,15 @@ def nearest(data_type, in_filename_lon, out_filename_lon, nline_in, width_in):
         line_scale_factor = 4 # 高度过采样因子
         width_scale_factor = 4 #宽度过采样因子
     if data_type == 'GF3':
-        line_scale_factor = 4 # 高度过采样因子
-        width_scale_factor = 4 #宽度过采样因子
+        if gf3Mode == "FSI":
+            line_scale_factor = 4  # 高度过采样因子
+            width_scale_factor = 2  # 宽度过采样因子
+        elif gf3Mode == "FSII":
+            line_scale_factor = 4  # 高度过采样因子
+            width_scale_factor = 4  # 宽度过采样因子
+        else:
+            line_scale_factor = 4  # 高度过采样因子
+            width_scale_factor = 4  # 宽度过采样因子
 
     nlines_out = nline_in * line_scale_factor  #高度
     width_out = width_in * width_scale_factor  #宽度
@@ -207,6 +215,7 @@ def geoCodeTiff_new(base_dir, master):
     cf = configparser.ConfigParser()
     cf.read(configfile)
     data_type = cf.get("other", "data_type")
+    gf3mode = cf.get("other","gf3mode")
     if data_type == 'Sentinel':
         width_in = int(width / 2)
         nline_in = int(height / 2)
@@ -217,14 +226,20 @@ def geoCodeTiff_new(base_dir, master):
         width_in = int(width / 4)
         nline_in = int(height / 4)
     if data_type == 'GF3':
-        width_in = int(width / 4)
-        nline_in = int(height / 4)
-
+        if gf3mode == "FSII":
+            width_in = int(width / 4)
+            nline_in = int(height / 4)
+        elif gf3mode == "FSI":
+            width_in = int(width / 2)
+            nline_in = int(height / 4)
+        else :
+            width_in = int(width / 4)
+            nline_in = int(height / 4)
 
 
     # 经纬度重采样
-    nearest(data_type, in_filename_lon, out_filename_lon, nline_in, width_in)
-    nearest(data_type, in_filename_lat, out_filename_lat, nline_in, width_in)
+    nearest(data_type, in_filename_lon, out_filename_lon, nline_in, width_in,gf3mode)
+    nearest(data_type, in_filename_lat, out_filename_lat, nline_in, width_in,gf3mode)
 
     cf = configparser.ConfigParser()
     cf.read(base_dir + '/config.ini')
@@ -778,6 +793,7 @@ class Ui_Dialog(QtWidgets.QDialog):
         return True
 
     def create_master_mli(self, file, row, column):  # 生成主影像的图片，用于选取裁剪范围
+
         SLC_file = open(file, "rb")
         GB = 0.01 * 1024 * 1024 * 1024 / 4
         total = row * column
@@ -815,7 +831,9 @@ class Ui_Dialog(QtWidgets.QDialog):
             out[:, -total:] = np.sqrt(real_pow + imag_pow)
             del origin_data;del data_unpack;del real_pow;del imag_pow
         out_image = cv2.pyrDown(cv2.pyrDown(cv2.pyrDown(out.reshape([row, column]))))
-        cv2.imwrite(self.datafile + '/master.png',out_image)
+        ext = os.path.splitext(file)
+        pngname = ext[0] + ".png"
+        cv2.imwrite(pngname,out_image)
         SLC_file.close()
 
     # 时间计算
@@ -961,6 +979,7 @@ class Ui_Dialog(QtWidgets.QDialog):
             my2 = child2Window()
             my2.child2_ui.comboBox.addItems(sorted(self.image_date))
             my2.child2_ui.comboBox.setCurrentIndex(0)
+
             my2.exec_()
 
             master_date_select = my2.child2_ui.comboBox.currentText()
@@ -1000,6 +1019,7 @@ class Ui_Dialog(QtWidgets.QDialog):
                         bat_shell + " " + self.master_image + " " + lines[index].replace("\n", "") for index in
                         range(1, len(lines)))
                 else:
+                    #print("")
                     bat_shell = "D:/cygwin64/project/cmd/align_image.bat " + self.workspace
                     command_set = list(
                         bat_shell + " " + self.master_image + " " + lines[index].split("#")[0] for index in
@@ -1015,23 +1035,20 @@ class Ui_Dialog(QtWidgets.QDialog):
                 os.popen(merge_command).read()
                 self.master_image = self.master_image.split("F")[0] + "F123"
 
-            # 获取影像行列
             for line in open(self.datafile + 'master.PRM'):
                 if 'num_valid_az' in line:
                     num_valid_az = int(line.split('=')[1])
                 if 'num_rng_bins' in line:
                     num_rng_bins = int(line.split('=')[1])
-
             # 生产master文件的png图像\
-            print("开始生成强度影像....")
+            print("开始生成强度主影像....")
             slc_file = self.datafile + "master.SLC"
             self.create_master_mli(slc_file, num_valid_az, num_rng_bins)
-
             # 参数文件设置
             self.set_config("other", "num_valid_az", str(num_valid_az))
             self.set_config("other", "num_rng_bins", str(num_rng_bins))
             self.set_config('other', 'master_image', str(self.master_image))
-
+            
             if os.path.exists(self.workspace + "/DEM"):
                 shutil.rmtree(self.workspace + "/DEM")
             flag = True
@@ -1118,9 +1135,9 @@ class Ui_Dialog(QtWidgets.QDialog):
             for command in command_multi_look:
                 os.popen(command).read()
 
-            # 生成topo_ra
-            command = "D:/cygwin64/project/cmd/generate_topo.bat " + self.workspace
-            os.popen(command).read()
+            # 生成topo_ra 暂时注释
+            #command = "D:/cygwin64/project/cmd/generate_topo.bat " + self.workspace
+            #os.popen(command).read()
             flag = True
 
         if flag == True:
@@ -1223,7 +1240,6 @@ class child2Window(QDialog):  # 选取主影像界面
             os.popen(command).read()
             command = "D:/cygwin64/project/cmd/preproc_align.bat " + self.workspace
             os.popen(command).read()
-
 
         #无需产生基线文件
         # cmd = "D:/cygwin64/project/cmd/select_pairs_sbas.bat  " + self.workspace + " " + str(1000) + " " + str(
